@@ -291,6 +291,8 @@ data NodeCmd
   | NodeNewCounter ColdVerificationKeyOrFile Word OpCertCounterFile
   | NodeIssueOpCert (VerificationKeyOrFile KesKey) SigningKeyFile OpCertCounterFile
                     KESPeriod OutputFile
+  | NodeKesSign AnyConsensusModeParams NetworkId SigningKeyFile SigningMessageFile NodeOperationCertFile OutputFile
+
   deriving Show
 
 renderNodeCmd :: NodeCmd -> Text
@@ -302,6 +304,7 @@ renderNodeCmd cmd = do
     NodeKeyHashVRF {} -> "node key-hash-VRF"
     NodeNewCounter {} -> "node new-counter"
     NodeIssueOpCert{} -> "node issue-op-cert"
+    NodeKesSign{} -> "node kes-sign"
 
 
 data PoolCmd

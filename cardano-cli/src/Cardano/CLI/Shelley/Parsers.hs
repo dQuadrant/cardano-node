@@ -835,6 +835,9 @@ pNodeCmd =
     , subParser "issue-op-cert"
         (Opt.info pIssueOpCert $
            Opt.progDesc "Issue a node operational certificate")
+    , subParser "kes-sign"
+        (Opt.info pKesSign $
+          Opt.progDesc "Sign arbitary data using kes signing key.")
     ]
   where
     pKeyGenOperator :: Parser NodeCmd
@@ -876,6 +879,17 @@ pNodeCmd =
                       <*> pOperatorCertIssueCounterFile
                       <*> pKesPeriod
                       <*> pOutputFile
+    
+    pKesSign :: Parser NodeCmd
+    pKesSign =
+      NodeKesSign
+        <$> pConsensusModeParams
+        <*> pNetworkId
+        <*> pSigningKeyFile Input
+        <*> pSigningMessageFile Input
+        <*> pNodeOperationCertFile Input
+        <*> pOutputFile
+
 
 
 pPoolCmd :: Parser PoolCmd
@@ -1690,6 +1704,27 @@ pSigningKeyFile fdir =
       <> Opt.help (show fdir ++ " filepath of the signing key.")
       <> Opt.completer (Opt.bashCompleter "file")
       )
+
+pSigningMessageFile :: FileDirection -> Parser SigningMessageFile
+pSigningMessageFile fdir =
+  SigningMessageFile <$>
+    Opt.strOption
+      (  Opt.long "signing-message-file"
+      <> Opt.metavar "FILE"
+      <> Opt.help (show fdir ++ " filepath of the message to be signed.")
+      <> Opt.completer (Opt.bashCompleter "file")
+      )
+
+pNodeOperationCertFile :: FileDirection -> Parser NodeOperationCertFile
+pNodeOperationCertFile fdir =
+  NodeOperationCertFile <$>
+    Opt.strOption
+      (  Opt.long "op-cert-file"
+      <> Opt.metavar "FILE"
+      <> Opt.help (show fdir ++ " filepath of the node's operational certificate.")
+      <> Opt.completer (Opt.bashCompleter "file")
+      )
+
 
 pWitnessSigningData :: Parser WitnessSigningData
 pWitnessSigningData =

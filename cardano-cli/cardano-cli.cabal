@@ -75,6 +75,7 @@ library
                         Cardano.CLI.Shelley.Output
                         Cardano.CLI.Shelley.Parsers
                         Cardano.CLI.Shelley.Run
+                        Cardano.CLI.Shelley.Errors
                         Cardano.CLI.Shelley.Run.Address
                         Cardano.CLI.Shelley.Run.Address.Info
                         Cardano.CLI.Shelley.Run.Genesis

@@ -29,7 +29,7 @@ module Cardano.CLI.Shelley.Run.Genesis
   ) where
 
 import           Cardano.Prelude hiding (unlines)
-import           Prelude (String, error, id, unlines, zip3)
+import           Prelude (error, id, zip3)
 
 import           Data.Aeson hiding (Key)
 import qualified Data.Aeson as Aeson
@@ -89,12 +89,9 @@ import           Cardano.Ledger.Era ()
 import           Cardano.CLI.Shelley.Commands
 import           Cardano.CLI.Shelley.Key
 import           Cardano.CLI.Shelley.Orphans ()
-import           Cardano.CLI.Shelley.Run.Address
-import           Cardano.CLI.Shelley.Run.Node (ShelleyNodeCmdError (..), renderShelleyNodeCmdError,
-                   runNodeIssueOpCert, runNodeKeyGenCold, runNodeKeyGenKES, runNodeKeyGenVRF)
-import           Cardano.CLI.Shelley.Run.Pool (ShelleyPoolCmdError (..), renderShelleyPoolCmdError)
-import           Cardano.CLI.Shelley.Run.StakeAddress (ShelleyStakeAddressCmdError (..),
-                   renderShelleyStakeAddressCmdError, runStakeAddressKeyGenToFile)
+import           Cardano.CLI.Shelley.Run.Node (runNodeIssueOpCert, runNodeKeyGenCold, runNodeKeyGenKES, runNodeKeyGenVRF)
+import           Cardano.CLI.Shelley.Run.Pool (ShelleyPoolCmdError (..))
+import           Cardano.CLI.Shelley.Run.StakeAddress (runStakeAddressKeyGenToFile)
 import           Cardano.CLI.Types
 
 import qualified Cardano.Chain.Common as Byron (KeyHash, mkKnownLovelace, rationalToLovelacePortion)
@@ -121,73 +118,10 @@ import qualified Cardano.CLI.IO.Lazy as Lazy
 
 import qualified System.Random as Random
 import           System.Random (StdGen)
+import Cardano.CLI.Shelley.Errors
+import Cardano.CLI.Helpers
 
-data ShelleyGenesisCmdError
-  = ShelleyGenesisCmdAesonDecodeError !FilePath !Text
-  | ShelleyGenesisCmdGenesisFileReadError !(FileError IOException)
-  | ShelleyGenesisCmdGenesisFileDecodeError !FilePath !Text
-  | ShelleyGenesisCmdGenesisFileError !(FileError ())
-  | ShelleyGenesisCmdFileError !(FileError ())
-  | ShelleyGenesisCmdMismatchedGenesisKeyFiles [Int] [Int] [Int]
-  | ShelleyGenesisCmdFilesNoIndex [FilePath]
-  | ShelleyGenesisCmdFilesDupIndex [FilePath]
-  | ShelleyGenesisCmdTextEnvReadFileError !(FileError TextEnvelopeError)
-  | ShelleyGenesisCmdUnexpectedAddressVerificationKey !VerificationKeyFile !Text !SomeAddressVerificationKey
-  | ShelleyGenesisCmdTooFewPoolsForBulkCreds !Word !Word !Word
-  | ShelleyGenesisCmdAddressCmdError !ShelleyAddressCmdError
-  | ShelleyGenesisCmdNodeCmdError !ShelleyNodeCmdError
-  | ShelleyGenesisCmdPoolCmdError !ShelleyPoolCmdError
-  | ShelleyGenesisCmdStakeAddressCmdError !ShelleyStakeAddressCmdError
-  | ShelleyGenesisCmdCostModelsError !FilePath
-  | ShelleyGenesisCmdByronError !ByronGenesisError
-  | ShelleyGenesisStakePoolRelayFileError !FilePath !IOException
-  | ShelleyGenesisStakePoolRelayJsonDecodeError !FilePath !String
-  deriving Show
 
-instance Error ShelleyGenesisCmdError where
-  displayError err =
-    case err of
-      ShelleyGenesisCmdAesonDecodeError fp decErr ->
-        "Error while decoding Shelley genesis at: " <> fp <> " Error: " <> Text.unpack decErr
-      ShelleyGenesisCmdGenesisFileError fe -> displayError fe
-      ShelleyGenesisCmdFileError fe -> displayError fe
-      ShelleyGenesisCmdMismatchedGenesisKeyFiles gfiles dfiles vfiles ->
-        "Mismatch between the files found:\n"
-          <> "Genesis key file indexes:      " <> show gfiles <> "\n"
-          <> "Delegate key file indexes:     " <> show dfiles <> "\n"
-          <> "Delegate VRF key file indexes: " <> show vfiles
-      ShelleyGenesisCmdFilesNoIndex files ->
-        "The genesis keys files are expected to have a numeric index but these do not:\n"
-          <> unlines files
-      ShelleyGenesisCmdFilesDupIndex files ->
-        "The genesis keys files are expected to have a unique numeric index but these do not:\n"
-          <> unlines files
-      ShelleyGenesisCmdTextEnvReadFileError fileErr -> displayError fileErr
-      ShelleyGenesisCmdUnexpectedAddressVerificationKey (VerificationKeyFile file) expect got -> mconcat
-        [ "Unexpected address verification key type in file ", file
-        , ", expected: ", Text.unpack expect, ", got: ", Text.unpack (renderSomeAddressVerificationKey got)
-        ]
-      ShelleyGenesisCmdTooFewPoolsForBulkCreds pools files perPool -> mconcat
-        [ "Number of pools requested for generation (", show pools
-        , ") is insufficient to fill ", show files
-        , " bulk files, with ", show perPool, " pools per file."
-        ]
-      ShelleyGenesisCmdAddressCmdError e -> Text.unpack $ renderShelleyAddressCmdError e
-      ShelleyGenesisCmdNodeCmdError e -> Text.unpack $ renderShelleyNodeCmdError e
-      ShelleyGenesisCmdPoolCmdError e -> Text.unpack $ renderShelleyPoolCmdError e
-      ShelleyGenesisCmdStakeAddressCmdError e -> Text.unpack $ renderShelleyStakeAddressCmdError e
-      ShelleyGenesisCmdCostModelsError fp -> "Cost model is invalid: " <> fp
-      ShelleyGenesisCmdGenesisFileDecodeError fp e ->
-       "Error while decoding Shelley genesis at: " <> fp <>
-       " Error: " <>  Text.unpack e
-      ShelleyGenesisCmdGenesisFileReadError e -> displayError e
-      ShelleyGenesisCmdByronError e -> show e
-      ShelleyGenesisStakePoolRelayFileError fp e ->
-        "Error occurred while reading the stake pool relay specification file: " <> fp <>
-        " Error: " <> show e
-      ShelleyGenesisStakePoolRelayJsonDecodeError fp e ->
-        "Error occurred while decoding the stake pool relay specification file: " <> fp <>
-        " Error: " <>  e
 
 runGenesisCmd :: GenesisCmd -> ExceptT ShelleyGenesisCmdError IO ()
 runGenesisCmd (GenesisKeyGenGenesis vk sk) = runGenesisKeyGenGenesis vk sk
@@ -1001,14 +935,6 @@ readShelleyGenesisWithDefault fpath adjustDefaults = do
       handleIOExceptT (ShelleyGenesisCmdGenesisFileError . FileIOError fpath) $
         LBS.writeFile fpath (encode defaults)
       return defaults
-
-readAndDecodeShelleyGenesis
-  :: FilePath
-  -> IO (Either ShelleyGenesisCmdError (ShelleyGenesis StandardShelley))
-readAndDecodeShelleyGenesis fpath = runExceptT $ do
-  lbs <- handleIOExceptT (ShelleyGenesisCmdGenesisFileReadError . FileIOError fpath) $ LBS.readFile fpath
-  firstExceptT (ShelleyGenesisCmdGenesisFileDecodeError fpath . Text.pack)
-    . hoistEither $ Aeson.eitherDecode' lbs
 
 updateTemplate
     :: SystemStart  -- ^ System start time

@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE GADTs #-}
 module Cardano.CLI.Shelley.Run.Node
   ( ShelleyNodeCmdError(ShelleyNodeCmdReadFileError)
   , renderShelleyNodeCmdError
@@ -14,46 +16,25 @@ import           Prelude (id)
 
 import qualified Data.ByteString.Char8 as BS
 import           Data.String (fromString)
-import qualified Data.Text as Text
 
-import           Control.Monad.Trans.Except.Extra (firstExceptT, hoistEither, newExceptT)
+import           Control.Monad.Trans.Except.Extra (firstExceptT, hoistEither, newExceptT, left, handleIOExceptT)
 
 import           Cardano.Api
 import           Cardano.Api.Shelley
 
 import           Cardano.CLI.Shelley.Commands
 import           Cardano.CLI.Shelley.Key (VerificationKeyOrFile, readVerificationKeyOrFile)
-import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile (..))
+import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile (..), SigningMessageFile (SigningMessageFile), NodeOperationCertFile (NodeOperationCertFile), CurrentKesPeriod (CurrentKesPeriod))
 
+import qualified Cardano.Ledger.Keys as Keys
+import Cardano.Ledger.Crypto (StandardCrypto)
+import qualified Cardano.Crypto.KES as  KES
+import Cardano.CLI.Shelley.Orphans ()
+import qualified Data.ByteString.Lazy as LBS hiding (putStrLn)
+import qualified Data.ByteString.Lazy.Char8 as LBS
+import Cardano.CLI.Shelley.Errors
+import Cardano.CLI.Shelley.Run.Query (getSbe, calcEraInMode, executeQuery, currentKesPeriod)
 {- HLINT ignore "Reduce duplication" -}
-
-data ShelleyNodeCmdError
-  = ShelleyNodeCmdReadFileError !(FileError TextEnvelopeError)
-  | ShelleyNodeCmdReadKeyFileError !(FileError InputDecodeError)
-  | ShelleyNodeCmdWriteFileError !(FileError ())
-  | ShelleyNodeCmdOperationalCertificateIssueError !OperationalCertIssueError
-  | ShelleyNodeCmdVrfSigningKeyCreationError
-      FilePath
-      -- ^ Target path
-      FilePath
-      -- ^ Temp path
-  deriving Show
-
-renderShelleyNodeCmdError :: ShelleyNodeCmdError -> Text
-renderShelleyNodeCmdError err =
-  case err of
-    ShelleyNodeCmdVrfSigningKeyCreationError targetPath tempPath ->
-      Text.pack $ "Error creating VRF signing key file. Target path: " <> targetPath
-      <> " Temporary path: " <> tempPath
-
-    ShelleyNodeCmdReadFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdReadKeyFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdWriteFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdOperationalCertificateIssueError issueErr ->
-      Text.pack (displayError issueErr)
 
 
 runNodeCmd :: NodeCmd -> ExceptT ShelleyNodeCmdError IO ()
@@ -64,9 +45,7 @@ runNodeCmd (NodeKeyHashVRF vk mOutFp) = runNodeKeyHashVRF vk mOutFp
 runNodeCmd (NodeNewCounter vk ctr out) = runNodeNewCounter vk ctr out
 runNodeCmd (NodeIssueOpCert vk sk ctr p out) =
   runNodeIssueOpCert vk sk ctr p out
-
-
-
+runNodeCmd (NodeKesSign cmp nw sk sm op out) = runNodeKesSign cmp nw sk sm op out
 --
 -- Node command implementations
 --
@@ -261,3 +240,79 @@ readColdVerificationKeyOrFile coldVerKeyOrFile =
         ]
         fp
 
+runNodeKesSign
+  :: AnyConsensusModeParams
+  -> NetworkId
+  -> SigningKeyFile
+  -> SigningMessageFile
+  -> NodeOperationCertFile
+  -> OutputFile
+  -> ExceptT ShelleyNodeCmdError IO ()
+runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesSKeyFile) (SigningMessageFile signMsgFile) (NodeOperationCertFile opFile) (OutputFile outFile) = do
+
+    (KesSigningKey kes_0) <- firstExceptT ShelleyNodeCmdReadFileError
+      (newExceptT $ readFileTextEnvelope (AsSigningKey AsKesKey) kesSKeyFile)
+
+    opCert <- firstExceptT ShelleyNodeCmdReadFileError
+            . newExceptT $ readFileTextEnvelope AsOperationalCertificate opFile
+
+    SocketPath sockPath <- firstExceptT (ShelleyNodeCmdQuery . ShelleyQueryCmdEnvVarSocketErr)
+                           $ newExceptT readEnvSocketPath
+    let localNodeConnInfo = LocalNodeConnectInfo cModeParams network sockPath
+
+    AnyCardanoEra era <-
+      firstExceptT (ShelleyNodeCmdQuery . ShelleyQueryCmdAcquireFailure)
+        . newExceptT $ determineEra cModeParams localNodeConnInfo
+
+
+    let cMode = consensusModeOnly cModeParams
+    sbe <- firstExceptT ShelleyNodeCmdQuery $ getSbe $ cardanoEraStyle era
+
+    case cMode of
+      CardanoMode -> do
+        chainTip <- liftIO $ getLocalChainTip localNodeConnInfo
+        eInMode <- firstExceptT ShelleyNodeCmdQuery $ calcEraInMode era cMode
+        let genesisQinMode = QueryInEra eInMode . QueryInShelleyBasedEra sbe $ QueryGenesisParameters
+        gParams <- firstExceptT ShelleyNodeCmdQuery $ executeQuery era cModeParams localNodeConnInfo genesisQinMode
+        let (CurrentKesPeriod curKesPeriodFromNode) = currentKesPeriod chainTip gParams
+
+        let startingKesPeriod = fromIntegral $ getKesPeriod opCert
+        _ <- if startingKesPeriod > curKesPeriodFromNode
+          then left ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
+        else pure ()
+
+        -- Find out the target period for the KES key so that KES_0 key can be evolved to required target
+        let targetKesPeriod = fromIntegral (curKesPeriodFromNode - startingKesPeriod)
+        let currentKesEvol = evolveKESUntil kes_0 0 targetKesPeriod
+
+        case currentKesEvol of
+          Nothing -> left ShelleyNodeCmdKESKeyEvolutionFailed
+          Just currentKes -> do
+            signMsgBs <- liftIO $ BS.readFile signMsgFile
+            let sig :: (Keys.SignedKES StandardCrypto ByteString)
+                sig = KES.signedKES () targetKesPeriod signMsgBs currentKes
+                sigTextEnvJson = textEnvelopeToJSON Nothing sig
+
+            handleIOExceptT (ShelleyNodeCmdWriteFileError . FileIOError outFile)
+              $ LBS.writeFile outFile sigTextEnvJson
+            
+            liftIO $ LBS.putStrLn "Message is signed and saved sucessfully."
+      mode -> left . ShelleyNodeCmdQuery $ ShelleyQueryCmdUnsupportedMode $ AnyConsensusMode mode
+  where
+    -- | Try to evolve KES key until specific KES period is reached, given the
+    -- current KES period.
+    evolveKESUntil ::
+      (KES.KESAlgorithm v, KES.ContextKES v ~ ()) =>
+      KES.SignKeyKES v ->
+      -- | Current KES period
+      Word ->
+      -- | Target KES period
+      Word ->
+      Maybe (KES.SignKeyKES v)
+    evolveKESUntil = go
+      where
+        go _ c t | t < c = Nothing
+        go sk c t | c == t = Just sk
+        go sk c t = case KES.updateKES () sk c of
+          Nothing -> Nothing
+          Just sk' -> go sk' (c + 1) t
