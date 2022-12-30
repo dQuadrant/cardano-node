@@ -23,7 +23,7 @@ import qualified Cardano.Ledger.PoolDistr as Ledger
 import qualified Cardano.Ledger.Shelley.EpochBoundary as Ledger
 import qualified Cardano.Ledger.Shelley.PoolRank as Ledger
 import           Cardano.Ledger.TxIn (TxId (..))
-import           Cardano.Prelude (Bool(True), Category((.)))
+import           Cardano.Prelude (Bool(True), Category((.)),(<$>), Semigroup ((<>)))
 import qualified Cardano.Protocol.TPraos.API as Ledger
 import           Cardano.Protocol.TPraos.BHeader (HashHeader (..))
 import qualified Cardano.Protocol.TPraos.Rules.Prtcl as Ledger
@@ -45,6 +45,14 @@ import qualified Ouroboros.Consensus.Protocol.TPraos as Consensus
 import           Ouroboros.Consensus.Shelley.Eras (StandardCrypto)
 import           Ouroboros.Consensus.Shelley.Ledger.Block (ShelleyHash (..))
 import           Ouroboros.Network.Block (BlockNo (..), HeaderHash, Tip (..))
+import qualified Cardano.Crypto.KES as  KES
+import           Data.Typeable (Typeable)
+import qualified Cardano.Binary as CBOR
+import           Cardano.Api (HasTypeProxy(..), SerialiseAsCBOR (serialiseToCBOR), HasTextEnvelope(..))
+import qualified Cardano.Ledger.Crypto as Shelley
+import Data.Proxy (Proxy (Proxy))
+import qualified Cardano.Crypto.KES as Crypto
+import Data.String (fromString)
 
 instance ToJSON (OneEraHash xs) where
   toJSON = toJSON
@@ -117,3 +125,25 @@ instance ToJSON (Cardano.WithOrigin Cardano.SlotNo) where
   toJSON = \case
     Cardano.Origin -> Aeson.String "origin"
     Cardano.At (Cardano.SlotNo n) -> toJSON n
+
+-- Orphan instances related to SignedKES wrapper
+instance (KES.KESAlgorithm v, KES.Signable v a, Typeable a) => CBOR.ToCBOR (KES.SignedKES v a) where
+  toCBOR = KES.encodeSignedKES
+  encodedSizeExpr _ proxy = KES.encodedSigKESSizeExpr (KES.getSig <$> proxy)
+
+instance (KES.KESAlgorithm v, KES.Signable v a, Typeable a) => CBOR.FromCBOR (KES.SignedKES v a) where
+  fromCBOR = KES.decodeSignedKES
+
+instance HasTypeProxy (KES.SignedKES v a) where
+    data AsType (KES.SignedKES v a) = AsKES
+    proxyToAsType _ = AsKES
+
+instance (KES.KESAlgorithm v, KES.Signable v a, Typeable a) => SerialiseAsCBOR (KES.SignedKES v a) where
+  serialiseToCBOR = CBOR.serialize'
+
+instance (KES.KESAlgorithm v, KES.Signable v a, Typeable a) => HasTextEnvelope (KES.SignedKES v a) where
+  textEnvelopeType _ = "KesSignature_"
+                    <> fromString (Crypto.algorithmNameKES proxy)
+    where
+      proxy :: Proxy (Shelley.KES StandardCrypto)
+      proxy = Proxy

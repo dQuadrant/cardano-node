@@ -21,6 +21,8 @@ module Cardano.CLI.Types
   , TxBuildOutputOptions(..)
   , ReferenceScriptAnyEra (..)
   , SigningKeyFile (..)
+  , SigningMessageFile (..)
+  , NodeOperationCertFile (..)
   , ScriptFile (..)
   , ScriptDataOrFile (..)
   , ScriptRedeemerOrFile
@@ -246,6 +248,17 @@ newtype SigningKeyFile = SigningKeyFile
   { unSigningKeyFile :: FilePath }
   deriving stock (Eq, Ord)
   deriving newtype (IsString, Show)
+
+newtype SigningMessageFile = SigningMessageFile
+  { unSigningMessageFile :: FilePath }
+  deriving stock (Eq, Ord)
+  deriving newtype (IsString, Show)
+
+newtype NodeOperationCertFile = NodeOperationCertFile
+  { unNodeOperationCertFile :: FilePath }
+  deriving stock (Eq, Ord)
+  deriving newtype (IsString, Show)
+
 
 newtype UpdateProposalFile = UpdateProposalFile { unUpdateProposalFile :: FilePath }
                              deriving newtype (Eq, Show)
