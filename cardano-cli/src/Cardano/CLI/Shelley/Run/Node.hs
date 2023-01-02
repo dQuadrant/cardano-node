@@ -30,28 +30,28 @@ import qualified Data.ByteString.Char8 as BS
 import           Data.String (fromString)
 import qualified Data.Text as Text
 
-import           Control.Monad.Trans.Except.Extra (firstExceptT, hoistEither, newExceptT, left, hoistMaybe)
+import           Control.Monad.Trans.Except.Extra (firstExceptT, hoistEither, newExceptT, left, hoistMaybe, handleIOExceptT)
 
 import           Cardano.Api
 import           Cardano.Api.Shelley
 
 import           Cardano.CLI.Shelley.Commands
 import           Cardano.CLI.Shelley.Key (VerificationKeyOrFile, readVerificationKeyOrFile)
-import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile (..), SigningMessageFile, NodeOperationCertFile (NodeOperationCertFile), CurrentKesPeriod (CurrentKesPeriod))
+import           Cardano.CLI.Types (SigningKeyFile (..), VerificationKeyFile (..), SigningMessageFile (SigningMessageFile), NodeOperationCertFile (NodeOperationCertFile))
 
 import qualified Cardano.Ledger.Keys as Keys
 import Cardano.Ledger.Crypto (StandardCrypto)
 import qualified Cardano.Crypto.KES as  KES
-import qualified Data.Aeson as Aeson
 import Cardano.CLI.Shelley.Orphans ()
-import qualified Data.ByteString.Lazy.Char8 as LBS
 import Ouroboros.Consensus.HardFork.Combinator.AcrossEras (EraMismatch)
 import qualified Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQuery
 import qualified Cardano.Api as Api
+import qualified Data.ByteString.Lazy as LBS hiding (putStrLn)
+import qualified Data.ByteString.Lazy.Char8 as LBS
 {- HLINT ignore "Reduce duplication" -}
 
 -- | An error that can occur while querying a node's local state.
-data ShelleyQueryCmdLocalStateQueryError
+data ShelleyNodeCmdLocalStateQueryError
   = AcquireFailureError !LocalStateQuery.AcquireFailure
   | EraMismatchError !EraMismatch
   -- ^ A query from a certain era was applied to a ledger from a different
@@ -70,9 +70,11 @@ data ShelleyNodeCmdError
   | ShelleyNodeCmdOperationalCertificateIssueError !OperationalCertIssueError
   | ShelleyNodeCmdEnvVarSocketErr !EnvSocketError
   | ShelleyNodeCmdUnsupportedMode !AnyConsensusMode
+  | ShelleyNodeCmdKESKeyEvolutionFailed
   | ShelleyNodeCmdByronEra
+  | ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
   | ShelleyNodeCmdAcquireFailure !AcquiringFailure
-  | ShelleyNodeCmdLocalStateQueryError !ShelleyQueryCmdLocalStateQueryError
+  | ShelleyNodeCmdLocalStateQueryError !ShelleyNodeCmdLocalStateQueryError
   | ShelleyNodeCmdEraConsensusModeMismatch !AnyConsensusMode !AnyCardanoEra
   | ShelleyNodeCmdVrfSigningKeyCreationError
       FilePath
@@ -98,7 +100,28 @@ renderShelleyNodeCmdError err =
       Text.pack (displayError issueErr)
     ShelleyNodeCmdEnvVarSocketErr envSockErr -> renderEnvSocketError envSockErr
     ShelleyNodeCmdUnsupportedMode mode -> "Unsupported mode: " <> renderMode mode
+    ShelleyNodeCmdByronEra -> "This query cannot be used for the Byron era"
+    ShelleyNodeCmdAcquireFailure acquireFail -> Text.pack $ show acquireFail
 
+    ShelleyNodeCmdLocalStateQueryError lsqErr -> renderLocalStateQueryError lsqErr
+    ShelleyNodeCmdEraConsensusModeMismatch (AnyConsensusMode cMode) (AnyCardanoEra era) ->
+       "Consensus mode and era mismatch. Consensus mode: " <> show cMode <>
+      " Era: " <> show era
+    ShelleyNodeCmdOperationalCertificateKESPeriodInFuture ->
+      "Error Operational certificate starting kes period is in the future."
+    ShelleyNodeCmdKESKeyEvolutionFailed -> "Error Failed to evolve the kes key."
+
+renderLocalStateQueryError :: ShelleyNodeCmdLocalStateQueryError -> Text
+renderLocalStateQueryError lsqErr =
+  case lsqErr of
+    AcquireFailureError err -> "Local state query acquire failure: " <> show err
+    EraMismatchError err ->
+      "A query from a certain era was applied to a ledger from a different era: " <> show err
+    ByronProtocolNotSupportedError ->
+      "The attempted local state query does not support the Byron protocol."
+    ShelleyProtocolEraMismatch ->
+        "The Shelley protocol mode can only be used with the Shelley era, "
+     <> "i.e. with --shelley-mode use --shelley-era flag"
 
 
 
@@ -305,16 +328,16 @@ readColdVerificationKeyOrFile coldVerKeyOrFile =
         ]
         fp
 
-runNodeKesSign 
+runNodeKesSign
   :: AnyConsensusModeParams
   -> NetworkId
   -> SigningKeyFile
   -> SigningMessageFile
   -> NodeOperationCertFile
-  -> Maybe OutputFile
+  -> OutputFile
   -> ExceptT ShelleyNodeCmdError IO ()
-runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesSKeyFile) _ (NodeOperationCertFile opFile) _ = do
-    (KesSigningKey kesSKey) <- firstExceptT ShelleyNodeCmdReadFileError
+runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesSKeyFile) (SigningMessageFile signMsgFile) (NodeOperationCertFile opFile) (OutputFile outFile) = do
+    (KesSigningKey kes_0) <- firstExceptT ShelleyNodeCmdReadFileError
       (newExceptT $ readFileTextEnvelope (AsSigningKey AsKesKey) kesSKeyFile)
 
     opCert <- firstExceptT ShelleyNodeCmdReadFileError
@@ -324,7 +347,7 @@ runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesS
                            $ newExceptT readEnvSocketPath
     let localNodeConnInfo = LocalNodeConnectInfo cModeParams network sockPath
 
-    anyE@(AnyCardanoEra era) <-
+    AnyCardanoEra era <-
       firstExceptT ShelleyNodeCmdAcquireFailure
         . newExceptT $ determineEra cModeParams localNodeConnInfo
 
@@ -336,42 +359,38 @@ runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesS
       CardanoMode -> do
         chainTip <- liftIO $ getLocalChainTip localNodeConnInfo
         eInMode <- calcEraInMode era cMode
-
         let genesisQinMode = QueryInEra eInMode . QueryInShelleyBasedEra sbe $ QueryGenesisParameters
-
         gParams <- executeQuery era cModeParams localNodeConnInfo genesisQinMode
+        let curKesPeriodFromNode = currentKesPeriod chainTip gParams
 
-        let curKesPeriod = currentKesPeriod chainTip gParams
-        
-        liftIO $ print curKesPeriod
+        let startingKesPeriod = fromIntegral $ getKesPeriod opCert
+        _ <- if startingKesPeriod > curKesPeriodFromNode
+          then left ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
+        else pure ()
 
+        -- Find out the target period for the KES key so that KES_0 key can be evolved to required target
+        let targetKesPeriod = fromIntegral (curKesPeriodFromNode - startingKesPeriod)
+        let currentKesEvol = evolveKESUntil kes_0 0 targetKesPeriod
+
+        case currentKesEvol of
+          Nothing -> left ShelleyNodeCmdKESKeyEvolutionFailed
+          Just currentKes -> do
+            signMsgBs <- liftIO $ BS.readFile signMsgFile
+            let sig :: (Keys.SignedKES StandardCrypto ByteString)
+                sig = KES.signedKES () targetKesPeriod signMsgBs currentKes
+                sigTextEnvJson = textEnvelopeToJSON Nothing sig
+
+            handleIOExceptT (ShelleyNodeCmdWriteFileError . FileIOError outFile) 
+              $ LBS.writeFile outFile sigTextEnvJson
+            liftIO $ LBS.putStrLn "Message is signed and saved sucessfully."
       mode -> left . ShelleyNodeCmdUnsupportedMode $ AnyConsensusMode mode
-    
-
-
-    
-    -- let sig :: (Keys.SignedKES StandardCrypto ByteString)
-    --     sig = KES.signedKES () 0 "ok" kesSKey
-
-    -- -- print sig
-    -- print $ Aeson.encode $ serialiseToTextEnvelope Nothing sig
-    
-
-    -- -- case ssk of 
-    -- --   AKesSigningKey (KesSigningKey sk) -> print sk
-    -- --   _ -> throwError "Error Signing key must be KES signing key."
-
-    -- -- withSomeSigningKey ssk $ \sk -> do
-    -- --   let sig = makeShelleySignature "" sk
-    -- --   firstExceptT ShelleyKeyCmdWriteFileError . newExceptT $
-    -- --     writeFileTextEnvelope outFile Nothing sk
 
   where
-    currentKesPeriod :: ChainTip -> GenesisParameters -> CurrentKesPeriod
-    currentKesPeriod ChainTipAtGenesis _ = CurrentKesPeriod 0
+    currentKesPeriod :: ChainTip -> GenesisParameters -> Word64
+    currentKesPeriod ChainTipAtGenesis _ = 0
     currentKesPeriod (ChainTip currSlot _ _) gParams =
       let slotsPerKesPeriod = fromIntegral $ protocolParamSlotsPerKESPeriod gParams
-      in CurrentKesPeriod $ unSlotNo currSlot `div` slotsPerKesPeriod
+      in unSlotNo currSlot `div` slotsPerKesPeriod
 
 -- Helpers function related to quries according to era
 
@@ -412,3 +431,21 @@ calcEraInMode era mode=
 getSbe :: Monad m => CardanoEraStyle era -> ExceptT ShelleyNodeCmdError m (Api.ShelleyBasedEra era)
 getSbe LegacyByronEra = left ShelleyNodeCmdByronEra
 getSbe (Api.ShelleyBasedEra sbe) = return sbe
+
+-- | Try to evolve KES key until specific KES period is reached, given the
+-- current KES period.
+evolveKESUntil ::
+  (KES.KESAlgorithm v, KES.ContextKES v ~ ()) =>
+  KES.SignKeyKES v ->
+  -- | Current KES period
+  Word ->
+  -- | Target KES period
+  Word ->
+  Maybe (KES.SignKeyKES v)
+evolveKESUntil = go
+  where
+    go _ c t | t < c = Nothing
+    go sk c t | c == t = Just sk
+    go sk c t = case KES.updateKES () sk c of
+      Nothing -> Nothing
+      Just sk' -> go sk' (c + 1) t

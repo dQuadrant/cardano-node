@@ -888,7 +888,7 @@ pNodeCmd =
         <*> pSigningKeyFile Input
         <*> pSigningMessageFile Input
         <*> pNodeOperationCertFile Input
-        <*> pMaybeOutputFile
+        <*> pOutputFile
 
 
 

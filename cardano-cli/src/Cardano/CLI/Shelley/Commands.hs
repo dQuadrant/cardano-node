@@ -291,7 +291,7 @@ data NodeCmd
   | NodeNewCounter ColdVerificationKeyOrFile Word OpCertCounterFile
   | NodeIssueOpCert (VerificationKeyOrFile KesKey) SigningKeyFile OpCertCounterFile
                     KESPeriod OutputFile
-  | NodeKesSign AnyConsensusModeParams NetworkId SigningKeyFile SigningMessageFile NodeOperationCertFile (Maybe OutputFile)
+  | NodeKesSign AnyConsensusModeParams NetworkId SigningKeyFile SigningMessageFile NodeOperationCertFile OutputFile
 
   deriving Show
 
