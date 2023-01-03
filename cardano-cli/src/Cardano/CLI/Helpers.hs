@@ -11,6 +11,7 @@ module Cardano.CLI.Helpers
   , renderHelpersError
   , validateCBOR
   , hushM
+  , readAndDecodeShelleyGenesis
   ) where
 
 import           Cardano.Prelude
@@ -19,7 +20,7 @@ import           Prelude (String)
 import           Codec.CBOR.Pretty (prettyHexEnc)
 import           Codec.CBOR.Read (DeserialiseFailure, deserialiseFromBytes)
 import           Codec.CBOR.Term (decodeTerm, encodeTerm)
-import           Control.Monad.Trans.Except.Extra (handleIOExceptT, left)
+import           Control.Monad.Trans.Except.Extra (handleIOExceptT, left, hoistEither, firstExceptT)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Text as Text
@@ -35,23 +36,12 @@ import qualified Cardano.Chain.UTxO as UTxO
 import           Cardano.CLI.Types
 
 import qualified System.Directory as IO
-
-data HelpersError
-  = CBORPrettyPrintError !DeserialiseFailure
-  | CBORDecodingError !DeserialiseFailure
-  | IOError' !FilePath !IOException
-  | OutputMustNotAlreadyExist FilePath
-  | ReadCBORFileFailure !FilePath !Text
-  deriving Show
-
-renderHelpersError :: HelpersError -> Text
-renderHelpersError err =
-  case err of
-    OutputMustNotAlreadyExist fp -> "Output file/directory must not already exist: " <> Text.pack fp
-    ReadCBORFileFailure fp err' -> "CBOR read failure at: " <> Text.pack fp <> Text.pack (show err')
-    CBORPrettyPrintError err' -> "Error with CBOR decoding: " <> Text.pack (show err')
-    CBORDecodingError err' -> "Error with CBOR decoding: " <> Text.pack (show err')
-    IOError' fp ioE -> "Error at: " <> Text.pack fp <> " Error: " <> Text.pack (show ioE)
+import Cardano.CLI.Shelley.Errors
+import qualified Data.Aeson as Aeson
+import Cardano.Ledger.Shelley.API (ShelleyGenesis)
+import Ouroboros.Consensus.Cardano.Block (StandardShelley)
+import qualified Data.ByteString.Lazy as LBS
+import Cardano.Api.Shelley (FileError(FileIOError))
 
 decodeCBOR
   :: LByteString
@@ -122,3 +112,11 @@ hushM :: forall e m a. Monad m => Either e a -> (e -> m ()) -> m (Maybe a)
 hushM r f = case r of
   Right a -> return (Just a)
   Left e -> f e >> return Nothing
+
+readAndDecodeShelleyGenesis
+  :: FilePath
+  -> IO (Either ShelleyGenesisCmdError (ShelleyGenesis StandardShelley))
+readAndDecodeShelleyGenesis fpath = runExceptT $ do
+  lbs <- handleIOExceptT (ShelleyGenesisCmdGenesisFileReadError . FileIOError fpath) $ LBS.readFile fpath
+  firstExceptT (ShelleyGenesisCmdGenesisFileDecodeError fpath . Text.pack)
+    . hoistEither $ Aeson.eitherDecode' lbs

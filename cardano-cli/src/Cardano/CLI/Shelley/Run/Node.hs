@@ -1,17 +1,5 @@
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
-{-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
-
+{-# LANGUAGE GADTs #-}
 module Cardano.CLI.Shelley.Run.Node
   ( ShelleyNodeCmdError(ShelleyNodeCmdReadFileError)
   , renderShelleyNodeCmdError
@@ -48,81 +36,9 @@ import qualified Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQu
 import qualified Cardano.Api as Api
 import qualified Data.ByteString.Lazy as LBS hiding (putStrLn)
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import Cardano.CLI.Shelley.Errors
+import Control.Monad (fail)
 {- HLINT ignore "Reduce duplication" -}
-
--- | An error that can occur while querying a node's local state.
-data ShelleyNodeCmdLocalStateQueryError
-  = AcquireFailureError !LocalStateQuery.AcquireFailure
-  | EraMismatchError !EraMismatch
-  -- ^ A query from a certain era was applied to a ledger from a different
-  -- era.
-  | ByronProtocolNotSupportedError
-  -- ^ The query does not support the Byron protocol.
-  | ShelleyProtocolEraMismatch
-  -- ^ The Shelley protocol only supports the Shelley era.
-  deriving (Eq, Show)
-
-
-data ShelleyNodeCmdError
-  = ShelleyNodeCmdReadFileError !(FileError TextEnvelopeError)
-  | ShelleyNodeCmdReadKeyFileError !(FileError InputDecodeError)
-  | ShelleyNodeCmdWriteFileError !(FileError ())
-  | ShelleyNodeCmdOperationalCertificateIssueError !OperationalCertIssueError
-  | ShelleyNodeCmdEnvVarSocketErr !EnvSocketError
-  | ShelleyNodeCmdUnsupportedMode !AnyConsensusMode
-  | ShelleyNodeCmdKESKeyEvolutionFailed
-  | ShelleyNodeCmdByronEra
-  | ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
-  | ShelleyNodeCmdAcquireFailure !AcquiringFailure
-  | ShelleyNodeCmdLocalStateQueryError !ShelleyNodeCmdLocalStateQueryError
-  | ShelleyNodeCmdEraConsensusModeMismatch !AnyConsensusMode !AnyCardanoEra
-  | ShelleyNodeCmdVrfSigningKeyCreationError
-      FilePath
-      -- ^ Target path
-      FilePath
-      -- ^ Temp path
-  deriving Show
-
-renderShelleyNodeCmdError :: ShelleyNodeCmdError -> Text
-renderShelleyNodeCmdError err =
-  case err of
-    ShelleyNodeCmdVrfSigningKeyCreationError targetPath tempPath ->
-      Text.pack $ "Error creating VRF signing key file. Target path: " <> targetPath
-      <> " Temporary path: " <> tempPath
-
-    ShelleyNodeCmdReadFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdReadKeyFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdWriteFileError fileErr -> Text.pack (displayError fileErr)
-
-    ShelleyNodeCmdOperationalCertificateIssueError issueErr ->
-      Text.pack (displayError issueErr)
-    ShelleyNodeCmdEnvVarSocketErr envSockErr -> renderEnvSocketError envSockErr
-    ShelleyNodeCmdUnsupportedMode mode -> "Unsupported mode: " <> renderMode mode
-    ShelleyNodeCmdByronEra -> "This query cannot be used for the Byron era"
-    ShelleyNodeCmdAcquireFailure acquireFail -> Text.pack $ show acquireFail
-
-    ShelleyNodeCmdLocalStateQueryError lsqErr -> renderLocalStateQueryError lsqErr
-    ShelleyNodeCmdEraConsensusModeMismatch (AnyConsensusMode cMode) (AnyCardanoEra era) ->
-       "Consensus mode and era mismatch. Consensus mode: " <> show cMode <>
-      " Era: " <> show era
-    ShelleyNodeCmdOperationalCertificateKESPeriodInFuture ->
-      "Error Operational certificate starting kes period is in the future."
-    ShelleyNodeCmdKESKeyEvolutionFailed -> "Error Failed to evolve the kes key."
-
-renderLocalStateQueryError :: ShelleyNodeCmdLocalStateQueryError -> Text
-renderLocalStateQueryError lsqErr =
-  case lsqErr of
-    AcquireFailureError err -> "Local state query acquire failure: " <> show err
-    EraMismatchError err ->
-      "A query from a certain era was applied to a ledger from a different era: " <> show err
-    ByronProtocolNotSupportedError ->
-      "The attempted local state query does not support the Byron protocol."
-    ShelleyProtocolEraMismatch ->
-        "The Shelley protocol mode can only be used with the Shelley era, "
-     <> "i.e. with --shelley-mode use --shelley-era flag"
-
 
 
 runNodeCmd :: NodeCmd -> ExceptT ShelleyNodeCmdError IO ()
@@ -337,53 +253,54 @@ runNodeKesSign
   -> OutputFile
   -> ExceptT ShelleyNodeCmdError IO ()
 runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesSKeyFile) (SigningMessageFile signMsgFile) (NodeOperationCertFile opFile) (OutputFile outFile) = do
-    (KesSigningKey kes_0) <- firstExceptT ShelleyNodeCmdReadFileError
-      (newExceptT $ readFileTextEnvelope (AsSigningKey AsKesKey) kesSKeyFile)
+      fail "sad"
+    -- (KesSigningKey kes_0) <- firstExceptT ShelleyNodeCmdReadFileError
+    --   (newExceptT $ readFileTextEnvelope (AsSigningKey AsKesKey) kesSKeyFile)
 
-    opCert <- firstExceptT ShelleyNodeCmdReadFileError
-            . newExceptT $ readFileTextEnvelope AsOperationalCertificate opFile
+    -- opCert <- firstExceptT ShelleyNodeCmdReadFileError
+    --         . newExceptT $ readFileTextEnvelope AsOperationalCertificate opFile
 
-    SocketPath sockPath <- firstExceptT ShelleyNodeCmdEnvVarSocketErr
-                           $ newExceptT readEnvSocketPath
-    let localNodeConnInfo = LocalNodeConnectInfo cModeParams network sockPath
+    -- SocketPath sockPath <- firstExceptT ShelleyNodeCmdEnvVarSocketErr
+    --                        $ newExceptT readEnvSocketPath
+    -- let localNodeConnInfo = LocalNodeConnectInfo cModeParams network sockPath
 
-    AnyCardanoEra era <-
-      firstExceptT ShelleyNodeCmdAcquireFailure
-        . newExceptT $ determineEra cModeParams localNodeConnInfo
+    -- AnyCardanoEra era <-
+    --   firstExceptT ShelleyNodeCmdAcquireFailure
+    --     . newExceptT $ determineEra cModeParams localNodeConnInfo
 
 
-    let cMode = consensusModeOnly cModeParams
-    sbe <- getSbe $ cardanoEraStyle era
+    -- let cMode = consensusModeOnly cModeParams
+    -- sbe <- getSbe $ cardanoEraStyle era
 
-    case cMode of
-      CardanoMode -> do
-        chainTip <- liftIO $ getLocalChainTip localNodeConnInfo
-        eInMode <- calcEraInMode era cMode
-        let genesisQinMode = QueryInEra eInMode . QueryInShelleyBasedEra sbe $ QueryGenesisParameters
-        gParams <- executeQuery era cModeParams localNodeConnInfo genesisQinMode
-        let curKesPeriodFromNode = currentKesPeriod chainTip gParams
+    -- case cMode of
+    --   CardanoMode -> do
+    --     chainTip <- liftIO $ getLocalChainTip localNodeConnInfo
+    --     eInMode <- calcEraInMode era cMode
+    --     let genesisQinMode = QueryInEra eInMode . QueryInShelleyBasedEra sbe $ QueryGenesisParameters
+    --     gParams <- executeQuery era cModeParams localNodeConnInfo genesisQinMode
+    --     let curKesPeriodFromNode = currentKesPeriod chainTip gParams
 
-        let startingKesPeriod = fromIntegral $ getKesPeriod opCert
-        _ <- if startingKesPeriod > curKesPeriodFromNode
-          then left ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
-        else pure ()
+    --     let startingKesPeriod = fromIntegral $ getKesPeriod opCert
+    --     _ <- if startingKesPeriod > curKesPeriodFromNode
+    --       then left ShelleyNodeCmdOperationalCertificateKESPeriodInFuture
+    --     else pure ()
 
-        -- Find out the target period for the KES key so that KES_0 key can be evolved to required target
-        let targetKesPeriod = fromIntegral (curKesPeriodFromNode - startingKesPeriod)
-        let currentKesEvol = evolveKESUntil kes_0 0 targetKesPeriod
+    --     -- Find out the target period for the KES key so that KES_0 key can be evolved to required target
+    --     let targetKesPeriod = fromIntegral (curKesPeriodFromNode - startingKesPeriod)
+    --     let currentKesEvol = evolveKESUntil kes_0 0 targetKesPeriod
 
-        case currentKesEvol of
-          Nothing -> left ShelleyNodeCmdKESKeyEvolutionFailed
-          Just currentKes -> do
-            signMsgBs <- liftIO $ BS.readFile signMsgFile
-            let sig :: (Keys.SignedKES StandardCrypto ByteString)
-                sig = KES.signedKES () targetKesPeriod signMsgBs currentKes
-                sigTextEnvJson = textEnvelopeToJSON Nothing sig
+    --     case currentKesEvol of
+    --       Nothing -> left ShelleyNodeCmdKESKeyEvolutionFailed
+    --       Just currentKes -> do
+    --         signMsgBs <- liftIO $ BS.readFile signMsgFile
+    --         let sig :: (Keys.SignedKES StandardCrypto ByteString)
+    --             sig = KES.signedKES () targetKesPeriod signMsgBs currentKes
+    --             sigTextEnvJson = textEnvelopeToJSON Nothing sig
 
-            handleIOExceptT (ShelleyNodeCmdWriteFileError . FileIOError outFile) 
-              $ LBS.writeFile outFile sigTextEnvJson
-            liftIO $ LBS.putStrLn "Message is signed and saved sucessfully."
-      mode -> left . ShelleyNodeCmdUnsupportedMode $ AnyConsensusMode mode
+    --         handleIOExceptT (ShelleyNodeCmdWriteFileError . FileIOError outFile) 
+    --           $ LBS.writeFile outFile sigTextEnvJson
+    --         liftIO $ LBS.putStrLn "Message is signed and saved sucessfully."
+    --   mode -> left . ShelleyNodeCmdUnsupportedMode $ AnyConsensusMode mode
 
   where
     currentKesPeriod :: ChainTip -> GenesisParameters -> Word64
@@ -394,43 +311,43 @@ runNodeKesSign (AnyConsensusModeParams cModeParams) network (SigningKeyFile kesS
 
 -- Helpers function related to quries according to era
 
-executeQuery
-  :: forall result era mode. CardanoEra era
-  -> ConsensusModeParams mode
-  -> LocalNodeConnectInfo mode
-  -> QueryInMode mode (Either EraMismatch result)
-  -> ExceptT ShelleyNodeCmdError IO result
-executeQuery era cModeP localNodeConnInfo q = do
-  eraInMode <- calcEraInMode era $ consensusModeOnly cModeP
-  case eraInMode of
-    ByronEraInByronMode -> left ShelleyNodeCmdByronEra
-    _ -> liftIO execQuery >>= queryResult
- where
-   execQuery :: IO (Either AcquiringFailure (Either EraMismatch result))
-   execQuery = queryNodeLocalState localNodeConnInfo Nothing q
+-- executeQuery
+--   :: forall result era mode. CardanoEra era
+--   -> ConsensusModeParams mode
+--   -> LocalNodeConnectInfo mode
+--   -> QueryInMode mode (Either EraMismatch result)
+--   -> ExceptT ShelleyNodeCmdError IO result
+-- executeQuery era cModeP localNodeConnInfo q = do
+--   eraInMode <- calcEraInMode era $ consensusModeOnly cModeP
+--   case eraInMode of
+--     ByronEraInByronMode -> left ShelleyNodeCmdByronEra
+--     _ -> liftIO execQuery >>= queryResult
+--  where
+--    execQuery :: IO (Either AcquiringFailure (Either EraMismatch result))
+--    execQuery = queryNodeLocalState localNodeConnInfo Nothing q
 
-queryResult
-  :: Either AcquiringFailure (Either EraMismatch a)
-  -> ExceptT ShelleyNodeCmdError IO a
-queryResult eAcq =
-  case eAcq of
-    Left acqFailure -> left $ ShelleyNodeCmdAcquireFailure acqFailure
-    Right eResult ->
-      case eResult of
-        Left err -> left . ShelleyNodeCmdLocalStateQueryError $ EraMismatchError err
-        Right result -> return result
+-- queryResult
+--   :: Either AcquiringFailure (Either EraMismatch a)
+--   -> ExceptT ShelleyNodeCmdError IO a
+-- queryResult eAcq =
+--   case eAcq of
+--     Left acqFailure -> left $ ShelleyNodeCmdAcquireFailure acqFailure
+--     Right eResult ->
+--       case eResult of
+--         Left err -> left . ShelleyQueryCmdLocalStateQueryError $ EraMismatchError err
+--         Right result -> return result
 
-calcEraInMode
-  :: CardanoEra era
-  -> ConsensusMode mode
-  -> ExceptT ShelleyNodeCmdError IO (EraInMode era mode)
-calcEraInMode era mode=
-  hoistMaybe (ShelleyNodeCmdEraConsensusModeMismatch (AnyConsensusMode mode) (anyCardanoEra era))
-                  $ toEraInMode era mode
+-- calcEraInMode
+--   :: CardanoEra era
+--   -> ConsensusMode mode
+--   -> ExceptT ShelleyNodeCmdError IO (EraInMode era mode)
+-- calcEraInMode era mode=
+--   hoistMaybe (ShelleyNodeCmdEraConsensusModeMismatch (AnyConsensusMode mode) (anyCardanoEra era))
+--                   $ toEraInMode era mode
 
-getSbe :: Monad m => CardanoEraStyle era -> ExceptT ShelleyNodeCmdError m (Api.ShelleyBasedEra era)
-getSbe LegacyByronEra = left ShelleyNodeCmdByronEra
-getSbe (Api.ShelleyBasedEra sbe) = return sbe
+-- getSbe :: Monad m => CardanoEraStyle era -> ExceptT ShelleyNodeCmdError m (Api.ShelleyBasedEra era)
+-- getSbe LegacyByronEra = left ShelleyNodeCmdByronEra
+-- getSbe (Api.ShelleyBasedEra sbe) = return sbe
 
 -- | Try to evolve KES key until specific KES period is reached, given the
 -- current KES period.

@@ -54,20 +54,18 @@ import           Data.Text.Lazy.Builder (toLazyText)
 import           Data.Time.Clock
 import qualified Data.Vector as Vector
 import qualified Data.VMap as VMap
-import           Formatting.Buildable (build)
 import           Numeric (showEFloat)
 import qualified System.IO as IO
 import           Text.Printf (printf)
 
 import           Cardano.Binary (DecoderError)
-import           Cardano.CLI.Helpers (HelpersError (..), hushM, pPrintCBOR, renderHelpersError)
+import           Cardano.CLI.Helpers (HelpersError (..), hushM, pPrintCBOR, renderHelpersError, readAndDecodeShelleyGenesis)
 import           Cardano.CLI.Shelley.Commands
+import           Cardano.CLI.Shelley.Errors
 import           Cardano.CLI.Shelley.Key (VerificationKeyOrHashOrFile,
                    readVerificationKeyOrHashOrFile)
 import           Cardano.CLI.Shelley.Orphans ()
 import qualified Cardano.CLI.Shelley.Output as O
-import           Cardano.CLI.Shelley.Run.Genesis (ShelleyGenesisCmdError,
-                   readAndDecodeShelleyGenesis)
 import           Cardano.CLI.Types
 import           Cardano.Crypto.Hash (hashToBytesAsHex)
 import qualified Cardano.Crypto.Hash.Blake2b as Blake2b
@@ -107,69 +105,6 @@ import qualified Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQu
 {- HLINT ignore "Reduce duplication" -}
 {- HLINT ignore "Use const" -}
 {- HLINT ignore "Use let" -}
-
-data ShelleyQueryCmdError
-  = ShelleyQueryCmdEnvVarSocketErr !EnvSocketError
-  | ShelleyQueryCmdLocalStateQueryError !ShelleyQueryCmdLocalStateQueryError
-  | ShelleyQueryCmdWriteFileError !(FileError ())
-  | ShelleyQueryCmdHelpersError !HelpersError
-  | ShelleyQueryCmdAcquireFailure !AcquiringFailure
-  | ShelleyQueryCmdEraConsensusModeMismatch !AnyConsensusMode !AnyCardanoEra
-  | ShelleyQueryCmdByronEra
-  | ShelleyQueryCmdPoolIdError (Hash StakePoolKey)
-  | ShelleyQueryCmdEraMismatch !EraMismatch
-  | ShelleyQueryCmdUnsupportedMode !AnyConsensusMode
-  | ShelleyQueryCmdPastHorizon !Qry.PastHorizonException
-  | ShelleyQueryCmdSystemStartUnavailable
-  | ShelleyQueryCmdGenesisReadError !ShelleyGenesisCmdError
-  | ShelleyQueryCmdLeaderShipError !LeadershipError
-  | ShelleyQueryCmdTextEnvelopeReadError !(FileError TextEnvelopeError)
-  | ShelleyQueryCmdTextReadError !(FileError InputDecodeError)
-  | ShelleyQueryCmdColdKeyReadFileError !(FileError InputDecodeError)
-  | ShelleyQueryCmdOpCertCounterReadError !(FileError TextEnvelopeError)
-  | ShelleyQueryCmdProtocolStateDecodeFailure !(LBS.ByteString, DecoderError)
-  | ShelleyQueryCmdSlotToUtcError Text
-  | ShelleyQueryCmdNodeUnknownStakePool
-      FilePath
-      -- ^ Operational certificate of the unknown stake pool.
-  | ShelleyQueryCmdPoolStateDecodeError DecoderError
-
-  deriving Show
-
-renderShelleyQueryCmdError :: ShelleyQueryCmdError -> Text
-renderShelleyQueryCmdError err =
-  case err of
-    ShelleyQueryCmdEnvVarSocketErr envSockErr -> renderEnvSocketError envSockErr
-    ShelleyQueryCmdLocalStateQueryError lsqErr -> renderLocalStateQueryError lsqErr
-    ShelleyQueryCmdWriteFileError fileErr -> Text.pack (displayError fileErr)
-    ShelleyQueryCmdHelpersError helpersErr -> renderHelpersError helpersErr
-    ShelleyQueryCmdAcquireFailure acquireFail -> Text.pack $ show acquireFail
-    ShelleyQueryCmdByronEra -> "This query cannot be used for the Byron era"
-    ShelleyQueryCmdPoolIdError poolId -> "The pool id does not exist: " <> show poolId
-    ShelleyQueryCmdEraConsensusModeMismatch (AnyConsensusMode cMode) (AnyCardanoEra era) ->
-      "Consensus mode and era mismatch. Consensus mode: " <> show cMode <>
-      " Era: " <> show era
-    ShelleyQueryCmdEraMismatch (EraMismatch ledgerEra queryEra) ->
-      "\nAn error mismatch occurred." <> "\nSpecified query era: " <> queryEra <>
-      "\nCurrent ledger era: " <> ledgerEra
-    ShelleyQueryCmdUnsupportedMode mode -> "Unsupported mode: " <> renderMode mode
-    ShelleyQueryCmdPastHorizon e -> "Past horizon: " <> show e
-    ShelleyQueryCmdSystemStartUnavailable -> "System start unavailable"
-    ShelleyQueryCmdGenesisReadError err' -> Text.pack $ displayError err'
-    ShelleyQueryCmdLeaderShipError e -> Text.pack $ displayError e
-    ShelleyQueryCmdTextEnvelopeReadError e -> Text.pack $ displayError e
-    ShelleyQueryCmdSlotToUtcError e -> "Failed to convert slot to UTC time: " <> e
-    ShelleyQueryCmdTextReadError e -> Text.pack $ displayError e
-    ShelleyQueryCmdColdKeyReadFileError e -> Text.pack $ displayError e
-    ShelleyQueryCmdOpCertCounterReadError e -> Text.pack $ displayError e
-    ShelleyQueryCmdProtocolStateDecodeFailure (_, decErr) ->
-      "Failed to decode the protocol state: " <> toStrict (toLazyText $ build decErr)
-    ShelleyQueryCmdNodeUnknownStakePool nodeOpCert ->
-      Text.pack $ "The stake pool associated with: " <> nodeOpCert <> " was not found. Ensure the correct KES key has been " <>
-                  "specified and that the stake pool is registered. If you have submitted a stake pool registration certificate " <>
-                  "in the current epoch, you must wait until the following epoch for the registration to take place."
-    ShelleyQueryCmdPoolStateDecodeError decoderError ->
-      "Failed to decode PoolState.  Error: " <> Text.pack (show decoderError)
 
 runQueryCmd :: QueryCmd -> ExceptT ShelleyQueryCmdError IO ()
 runQueryCmd cmd =
@@ -799,30 +734,6 @@ runQueryStakeAddressInfo (AnyConsensusModeParams cModeParams)
     Nothing -> left $ ShelleyQueryCmdEraConsensusModeMismatch (AnyConsensusMode cMode) anyE
 
 -- -------------------------------------------------------------------------------------------------
-
--- | An error that can occur while querying a node's local state.
-data ShelleyQueryCmdLocalStateQueryError
-  = AcquireFailureError !LocalStateQuery.AcquireFailure
-  | EraMismatchError !EraMismatch
-  -- ^ A query from a certain era was applied to a ledger from a different
-  -- era.
-  | ByronProtocolNotSupportedError
-  -- ^ The query does not support the Byron protocol.
-  | ShelleyProtocolEraMismatch
-  -- ^ The Shelley protocol only supports the Shelley era.
-  deriving (Eq, Show)
-
-renderLocalStateQueryError :: ShelleyQueryCmdLocalStateQueryError -> Text
-renderLocalStateQueryError lsqErr =
-  case lsqErr of
-    AcquireFailureError err -> "Local state query acquire failure: " <> show err
-    EraMismatchError err ->
-      "A query from a certain era was applied to a ledger from a different era: " <> show err
-    ByronProtocolNotSupportedError ->
-      "The attempted local state query does not support the Byron protocol."
-    ShelleyProtocolEraMismatch ->
-        "The Shelley protocol mode can only be used with the Shelley era, "
-     <> "i.e. with --shelley-mode use --shelley-era flag"
 
 writeStakeAddressInfo
   :: Maybe OutputFile
